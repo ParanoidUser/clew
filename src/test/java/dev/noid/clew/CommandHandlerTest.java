@@ -17,20 +17,22 @@ class CommandHandlerTest {
   @TempDir
   Path temp;
 
+  private DiskJournal wal;
   private ClewStack stack;
   private ByteArrayOutputStream out;
   private ByteArrayOutputStream err;
 
   @BeforeEach
   void setUp() throws Exception {
-    stack = new ClewStack(new Wal(Files.createFile(temp.resolve("wal.log"))));
+    wal = new DiskJournal(Files.createFile(temp.resolve("wal.log")));
+    stack = new ClewStack(wal);
     out = new ByteArrayOutputStream();
     err = new ByteArrayOutputStream();
   }
 
   private int invoke(String... args) {
-    ReviseUi noopUi = (state, s) -> {};
-    return new CommandHandler(args, stack, temp.resolve("revise.tmp"), noopUi,
+    ReviseUi noopUi = state -> {};
+    return new CommandHandler(args, stack, wal, temp.resolve("revise.tmp"), noopUi,
         new PrintStream(out), new PrintStream(err)).invoke();
   }
 
@@ -134,18 +136,19 @@ class CommandHandlerTest {
 
   @DisplayName("push/pop/peek/ls blocked when revise.tmp exists → exit 1, stderr contains 'revise in progress'")
   @Test
-  void commands_blocked_during_revise(@TempDir Path temp2) throws IOException {
-    ClewStack s = new ClewStack(new Wal(Files.createFile(temp2.resolve("wal.log"))));
+  void commands_blocked_during_revise(@TempDir Path temp) throws IOException {
+    DiskJournal wal = new DiskJournal(Files.createFile(temp.resolve("wal.log")));
+    ClewStack s = new ClewStack(wal);
     s.push("A");
-    Path scratch = temp2.resolve("revise.tmp");
-    ReviseState.start(s.list(), scratch);
+    Path scratch = temp.resolve("revise.tmp");
+    ReviseState.start(wal, scratch);
 
-    ReviseUi noopUi = (state, st) -> {};
+    ReviseUi noopUi = state -> {};
     for (String cmd : new String[]{"push", "pop", "peek", "ls"}) {
       var localOut = new ByteArrayOutputStream();
       var localErr = new ByteArrayOutputStream();
       int code = new CommandHandler(
-          new String[]{cmd}, s, scratch, noopUi,
+          new String[]{cmd}, s, wal, scratch, noopUi,
           new PrintStream(localOut), new PrintStream(localErr)).invoke();
       assertEquals(1, code, "expected exit 1 for: " + cmd);
       assertTrue(localErr.toString().contains("revise in progress"), "expected revise message for: " + cmd);

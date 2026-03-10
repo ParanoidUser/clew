@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.NoSuchElementException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,7 +16,7 @@ class ClewStackTest {
   @Test
   void empty_stack(@TempDir Path temp) throws Exception {
     Path walFile = Files.createFile(temp.resolve("empty.log"));
-    Wal log = new Wal(walFile);
+    DiskJournal log = new DiskJournal(walFile);
     ClewStack stack = new ClewStack(log);
     assertTrue(stack.list().isEmpty());
   }
@@ -24,7 +25,7 @@ class ClewStackTest {
   @Test
   void peek_on_last(@TempDir Path temp) throws Exception {
     Path walFile = Files.createFile(temp.resolve("empty.log"));
-    Wal log = new Wal(walFile);
+    DiskJournal log = new DiskJournal(walFile);
     ClewStack stack = new ClewStack(log);
     stack.push("A");
     assertEquals("A", stack.peek());
@@ -34,7 +35,7 @@ class ClewStackTest {
   @Test
   void top_is_most_Recent(@TempDir Path temp) throws Exception {
     Path walFile = Files.createFile(temp.resolve("empty.log"));
-    Wal log = new Wal(walFile);
+    DiskJournal log = new DiskJournal(walFile);
     ClewStack stack = new ClewStack(log);
     stack.push("A");
     stack.push("B");
@@ -45,7 +46,7 @@ class ClewStackTest {
   @Test
   void list(@TempDir Path temp) throws Exception {
     Path walFile = Files.createFile(temp.resolve("empty.log"));
-    Wal log = new Wal(walFile);
+    DiskJournal log = new DiskJournal(walFile);
     ClewStack stack = new ClewStack(log);
     stack.push("A");
     stack.push("B");
@@ -57,18 +58,29 @@ class ClewStackTest {
   @Test
   void clean_stack(@TempDir Path temp) throws Exception {
     Path walFile = Files.createFile(temp.resolve("empty.log"));
-    Wal log = new Wal(walFile);
+    DiskJournal log = new DiskJournal(walFile);
     ClewStack stack = new ClewStack(log);
     stack.push("A");
     assertEquals("A", stack.pop());
     assertTrue(stack.list().isEmpty());
   }
 
+  @DisplayName("push(\"A\"), push(\"B\") → returns \"A, B\", stack is not empty")
+  @Test
+  void dirty_stack(@TempDir Path temp) throws Exception {
+    Path walFile = Files.createFile(temp.resolve("empty.log"));
+    DiskJournal log = new DiskJournal(walFile);
+    ClewStack stack = new ClewStack(log);
+    stack.push("A");
+    stack.push("B");
+    assertEquals(List.of("A", "B"), stack.list()); // bottom on left side
+  }
+
   @DisplayName("push(\"A\"), push(\"B\"), pop() → returns \"B\", peek() returns \"A\"")
   @Test
   void ordering(@TempDir Path temp) throws Exception {
     Path walFile = Files.createFile(temp.resolve("empty.log"));
-    Wal log = new Wal(walFile);
+    DiskJournal log = new DiskJournal(walFile);
     ClewStack stack = new ClewStack(log);
     stack.push("A");
     stack.push("B");
@@ -80,7 +92,7 @@ class ClewStackTest {
   @Test
   void throwNSEE_on_empty_stack_pop(@TempDir Path temp) throws Exception {
     Path walFile = Files.createFile(temp.resolve("empty.log"));
-    Wal log = new Wal(walFile);
+    DiskJournal log = new DiskJournal(walFile);
     ClewStack stack = new ClewStack(log);
     assertThrows(NoSuchElementException.class, stack::pop);
   }
@@ -89,7 +101,7 @@ class ClewStackTest {
   @Test
   void throwNSEE_on_empty_stack_peek(@TempDir Path temp) throws Exception {
     Path walFile = Files.createFile(temp.resolve("empty.log"));
-    Wal log = new Wal(walFile);
+    DiskJournal log = new DiskJournal(walFile);
     ClewStack stack = new ClewStack(log);
     assertThrows(NoSuchElementException.class, stack::peek);
   }
@@ -98,10 +110,10 @@ class ClewStackTest {
   @Test
   void durable(@TempDir Path temp) throws Exception {
     Path walFile = Files.createFile(temp.resolve("empty.log"));
-    ClewStack write = new ClewStack(new Wal(walFile));
+    ClewStack write = new ClewStack(new DiskJournal(walFile));
     write.push("A");
 
-    ClewStack read = new ClewStack(new Wal(walFile));
+    ClewStack read = new ClewStack(new DiskJournal(walFile));
     assertEquals("A", read.peek());
   }
 }

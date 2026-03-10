@@ -1,6 +1,9 @@
 package dev.noid.clew;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.noid.clew.JournalEntry.Drop;
+import dev.noid.clew.JournalEntry.Pop;
+import dev.noid.clew.JournalEntry.Push;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -11,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.stream.Stream;
 
 public class ReviseState {
 
@@ -18,7 +22,7 @@ public class ReviseState {
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
-  public static ReviseState start(List<String> currentStack, Path scratchFile) {
+  public static ReviseState start(DiskJournal wal, Path scratchFile) {
     ArrayDeque<String> main = new ArrayDeque<>();
     if (Files.exists(scratchFile)) {
       throw new IllegalStateException("can't start new revise while active exists");
@@ -29,16 +33,30 @@ public class ReviseState {
     } catch (IOException cause) {
       throw new UncheckedIOException(cause);
     }
-    for (int i = currentStack.size() - 1; i >= 0; i--) {
-      main.push(currentStack.get(i));
+
+    List<String> stack = new ArrayList<>();
+    try(Stream<JournalEntry> entries = wal.openStream(0)) {
+      for (JournalEntry entry : entries.toList()){
+        if (entry instanceof Push(String msg)) {
+          stack.add(msg);
+        } else {
+          stack.removeLast();
+        }
+      }
+    } catch (Exception cause) {
+      throw new IllegalStateException(cause);
+    }
+    for (int i = stack.size() - 1; i >= 0; i--) {
+      main.push(stack.get(i));
     }
 
-    ReviseState state = new ReviseState(main, new ArrayDeque<>(), new ArrayDeque<>(), scratchFile);
+    ReviseState state = new ReviseState(wal, main, new ArrayDeque<>(), new ArrayDeque<>(),
+        scratchFile);
     state.dump();
     return state;
   }
 
-  public static ReviseState restore(Path scratchFile) {
+  public static ReviseState restore(DiskJournal wal, Path scratchFile) {
     ArrayDeque<String> main = new ArrayDeque<>();
     ArrayDeque<String> tempA = new ArrayDeque<>();
     ArrayDeque<String> tempB = new ArrayDeque<>();
@@ -62,19 +80,22 @@ public class ReviseState {
     } catch (IOException cause) {
       throw new UncheckedIOException(cause);
     }
-    return new ReviseState(main, tempA, tempB, scratchFile);
+    return new ReviseState(wal, main, tempA, tempB, scratchFile);
   }
 
+  private final DiskJournal wal;
   private final ArrayDeque<String> main;
   private final ArrayDeque<String> tempA;
   private final ArrayDeque<String> tempB;
   private final Path scratchFile;
 
   private ReviseState(
+      DiskJournal wal,
       ArrayDeque<String> main,
       ArrayDeque<String> tempA,
       ArrayDeque<String> tempB,
       Path scratchFile) {
+    this.wal = wal;
     this.main = main;
     this.tempA = tempA;
     this.tempB = tempB;
@@ -116,13 +137,24 @@ public class ReviseState {
   }
 
   // resolution
-  public void commit(ClewStack stack) {
-    while (!stack.list().isEmpty()) {
-      stack.pop();
+  public void commit() throws Exception {
+    List<Pop> pops = new ArrayList<>();
+    for (int i = 0; i < main.size(); i++) {
+      pops.add(new Pop());
     }
+    wal.append(pops);
+
+    List<Push> pushes = new ArrayList<>();
     while (!main.isEmpty()) {
-      stack.push(main.removeLast());
+      pushes.add(new Push(main.removeLast()));
     }
+    wal.append(pushes);
+
+    List<Drop> drops = new ArrayList<>();
+    for (int i = 0; i < tempA.size() + tempB.size(); i++) {
+      drops.add(new Drop());
+    }
+    wal.append(drops);
     try {
       Files.delete(scratchFile);
     } catch (IOException cause) {

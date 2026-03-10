@@ -14,14 +14,14 @@ import java.util.NoSuchElementException;
 public class ReviseView implements ReviseUi {
 
   @Override
-  public void run(ReviseState state, ClewStack stack) throws IOException {
+  public void run(ReviseState state) throws IOException {
     try (Screen screen = new DefaultTerminalFactory().createScreen()) {
       screen.startScreen();
-      loop(screen, state, stack);
+      loop(screen, state);
     }
   }
 
-  private void loop(Screen screen, ReviseState state, ClewStack stack) throws IOException {
+  private void loop(Screen screen, ReviseState state) throws IOException {
     Slot source = null;
     while (true) {
       render(screen, state, source);
@@ -37,16 +37,30 @@ public class ReviseView implements ReviseUi {
       }
 
       Character c = key.getCharacter();
-      if (c == null) continue;
+      if (c == null) {
+        continue;
+      }
 
       if (source == null) {
         switch (c) {
-          case 'q' -> { state.cancel(); return; }
-          case 'c' -> { state.commit(stack); return; }
+          case 'q' -> {
+            state.cancel();
+            return;
+          }
+          case 'c' -> {
+            try {
+              state.commit();
+            } catch (Exception e) {
+              throw new RuntimeException(e);
+            }
+            return;
+          }
           case 'e' -> {
             if (!state.main().isEmpty()) {
-              String edited = promptEdit(screen, state.main().get(0));
-              if (edited != null) state.edit(edited);
+              String edited = promptEdit(screen, state.main().getFirst());
+              if (edited != null) {
+                state.edit(edited);
+              }
             }
           }
           case '1' -> source = Slot.MAIN;
@@ -78,12 +92,12 @@ public class ReviseView implements ReviseUi {
     int rows = screen.getTerminalSize().getRows();
     int colW = cols / 3;
 
-    drawHeader(g, 0,        colW, "[1] MAIN ("   + state.main().size()  + ")", selected == Slot.MAIN);
-    drawHeader(g, colW,     colW, "[2] TEMP-A (" + state.tempA().size() + ")", selected == Slot.A);
+    drawHeader(g, 0, colW, "[1] MAIN (" + state.main().size() + ")", selected == Slot.MAIN);
+    drawHeader(g, colW, colW, "[2] TEMP-A (" + state.tempA().size() + ")", selected == Slot.A);
     drawHeader(g, colW * 2, colW, "[3] TEMP-B (" + state.tempB().size() + ")", selected == Slot.B);
 
-    drawItems(g, 2, 0,        colW, state.main(),  rows - 3);
-    drawItems(g, 2, colW,     colW, state.tempA(), rows - 3);
+    drawItems(g, 2, 0, colW, state.main(), rows - 3);
+    drawItems(g, 2, colW, colW, state.tempA(), rows - 3);
     drawItems(g, 2, colW * 2, colW, state.tempB(), rows - 3);
 
     String hint = selected == null
@@ -105,7 +119,8 @@ public class ReviseView implements ReviseUi {
     g.setBackgroundColor(TextColor.ANSI.DEFAULT);
   }
 
-  private void drawItems(TextGraphics g, int startRow, int col, int colW, List<String> items, int maxRows) {
+  private void drawItems(TextGraphics g, int startRow, int col, int colW, List<String> items,
+      int maxRows) {
     if (items.isEmpty()) {
       g.putString(col + 1, startRow, "(empty)");
       return;
@@ -115,7 +130,9 @@ public class ReviseView implements ReviseUi {
       String prefix = i == 0 ? "> " : "  ";
       String text = prefix + items.get(i);
       int maxLen = colW - 2;
-      if (text.length() > maxLen) text = text.substring(0, maxLen - 3) + "...";
+      if (text.length() > maxLen) {
+        text = text.substring(0, maxLen - 3) + "...";
+      }
       g.putString(col + 1, startRow + i, text);
     }
   }
@@ -140,13 +157,19 @@ public class ReviseView implements ReviseUi {
         String result = buf.toString().strip();
         return result.isEmpty() ? null : result;
       }
-      if (key.getKeyType() == KeyType.Escape) return null;
+      if (key.getKeyType() == KeyType.Escape) {
+        return null;
+      }
       if (key.getKeyType() == KeyType.Backspace) {
-        if (!buf.isEmpty()) buf.deleteCharAt(buf.length() - 1);
+        if (!buf.isEmpty()) {
+          buf.deleteCharAt(buf.length() - 1);
+        }
         continue;
       }
       Character c = key.getCharacter();
-      if (c != null) buf.append(c);
+      if (c != null) {
+        buf.append(c);
+      }
     }
   }
 }

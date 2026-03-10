@@ -11,6 +11,7 @@ public class CommandHandler {
 
   private final String[] args;
   private final ClewStack stack;
+  private final DiskJournal wal;
   private final Path scratchFile;
   private final ReviseUi reviseUi;
   private final PrintStream stdout;
@@ -19,12 +20,14 @@ public class CommandHandler {
   public CommandHandler(
       String[] args,
       ClewStack stack,
+      DiskJournal wal,
       Path scratchFile,
       ReviseUi reviseUi,
       PrintStream stdout,
       PrintStream stderr) {
     this.args = args;
     this.stack = stack;
+    this.wal = wal;
     this.scratchFile = scratchFile;
     this.reviseUi = reviseUi;
     this.stdout = stdout;
@@ -56,8 +59,8 @@ public class CommandHandler {
 
   private int invokeList() {
     List<String> items = stack.list();
-    for (int i = 0; i < items.size(); i++) {
-      stdout.printf("[%d] %s%n", items.size() - i, items.get(i));
+    for (int i = items.size() - 1; i >= 0; i--) {
+      stdout.printf("[%d] %s%n", i + 1, items.get(i));
     }
     return 0;
   }
@@ -66,7 +69,7 @@ public class CommandHandler {
     try {
       stdout.println(stack.peek());
       return 0;
-    } catch (NoSuchElementException cause) {
+    } catch (Exception cause) {
       stderr.println("stack is empty");
       return 1;
     }
@@ -76,7 +79,7 @@ public class CommandHandler {
     try {
       stdout.println(stack.pop());
       return 0;
-    } catch (NoSuchElementException cause) {
+    } catch (Exception cause) {
       stderr.println("stack is empty");
       return 1;
     }
@@ -87,8 +90,12 @@ public class CommandHandler {
       stderr.println("push requires a message");
       return 1;
     }
-    stack.push(message);
-    return 0;
+    try {
+      stack.push(message);
+      return 0;
+    } catch (Exception cause){
+      return 1;
+    }
   }
 
   private int invokeRevise() {
@@ -98,9 +105,9 @@ public class CommandHandler {
         return 1;
       }
       ReviseState state = Files.exists(scratchFile)
-          ? ReviseState.restore(scratchFile)
-          : ReviseState.start(stack.list(), scratchFile);
-      reviseUi.run(state, stack);
+          ? ReviseState.restore(wal, scratchFile)
+          : ReviseState.start(wal, scratchFile);
+      reviseUi.run(state);
       return 0;
     } catch (IllegalStateException cause) {
       stderr.println("error: " + cause.getMessage());
