@@ -1,4 +1,4 @@
-package dev.noid.clew;
+package dev.noid.clew.cli;
 
 import com.googlecode.lanterna.TextColor;
 import com.googlecode.lanterna.graphics.TextGraphics;
@@ -6,7 +6,8 @@ import com.googlecode.lanterna.input.KeyStroke;
 import com.googlecode.lanterna.input.KeyType;
 import com.googlecode.lanterna.screen.Screen;
 import com.googlecode.lanterna.terminal.DefaultTerminalFactory;
-import dev.noid.clew.ReviseState.Slot;
+import dev.noid.clew.stack.ReviseState;
+import dev.noid.clew.stack.ReviseState.Slot;
 import java.io.IOException;
 import java.util.List;
 import java.util.NoSuchElementException;

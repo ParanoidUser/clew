@@ -1,9 +1,11 @@
-package dev.noid.clew;
+package dev.noid.clew.stack;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dev.noid.clew.JournalEntry.Drop;
-import dev.noid.clew.JournalEntry.Pop;
-import dev.noid.clew.JournalEntry.Push;
+import dev.noid.clew.JournalRecord;
+import dev.noid.clew.codec.JournalCodec;
+import dev.noid.clew.JournalRecord.Pop;
+import dev.noid.clew.JournalRecord.Push;
+import dev.noid.clew.journal.Journal;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -22,8 +24,7 @@ public class ReviseState {
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
-  public static ReviseState start(DiskJournal wal, Path scratchFile) {
-    ArrayDeque<String> main = new ArrayDeque<>();
+  public static ReviseState start(Journal journal, JournalCodec<JournalRecord> codec, Path scratchFile) {
     if (Files.exists(scratchFile)) {
       throw new IllegalStateException("can't start new revise while active exists");
     }
@@ -34,36 +35,32 @@ public class ReviseState {
       throw new UncheckedIOException(cause);
     }
 
-    List<String> stack = new ArrayList<>();
-    try(Stream<JournalEntry> entries = wal.openStream(0)) {
-      for (JournalEntry entry : entries.toList()){
+    ArrayDeque<String> main = new ArrayDeque<>();
+    try (Stream<byte[]> records = journal.openStream(0)) {
+      for (JournalRecord entry : records.map(codec::decode).toList()) {
         if (entry instanceof Push(String msg)) {
-          stack.add(msg);
+          main.addFirst(msg);
         } else {
-          stack.removeLast();
+          main.removeFirst();
         }
       }
     } catch (Exception cause) {
       throw new IllegalStateException(cause);
     }
-    for (int i = stack.size() - 1; i >= 0; i--) {
-      main.push(stack.get(i));
-    }
 
-    ReviseState state = new ReviseState(wal, main, new ArrayDeque<>(), new ArrayDeque<>(),
-        scratchFile);
+    ReviseState state = new ReviseState(journal, codec, main, new ArrayDeque<>(), new ArrayDeque<>(), scratchFile);
     state.dump();
     return state;
   }
 
-  public static ReviseState restore(DiskJournal wal, Path scratchFile) {
-    ArrayDeque<String> main = new ArrayDeque<>();
-    ArrayDeque<String> tempA = new ArrayDeque<>();
-    ArrayDeque<String> tempB = new ArrayDeque<>();
-
+  public static ReviseState restore(Journal journal, JournalCodec<JournalRecord> codec, Path scratchFile) {
     if (!Files.exists(scratchFile)) {
       throw new IllegalStateException("there is no active revise session");
     }
+
+    ArrayDeque<String> main = new ArrayDeque<>();
+    ArrayDeque<String> tempA = new ArrayDeque<>();
+    ArrayDeque<String> tempB = new ArrayDeque<>();
 
     try (InputStream source = Files.newInputStream(scratchFile)) {
       String[][] stacks = MAPPER.readValue(source, String[][].class);
@@ -80,28 +77,30 @@ public class ReviseState {
     } catch (IOException cause) {
       throw new UncheckedIOException(cause);
     }
-    return new ReviseState(wal, main, tempA, tempB, scratchFile);
+    return new ReviseState(journal, codec, main, tempA, tempB, scratchFile);
   }
 
-  private final DiskJournal wal;
+  private final Journal journal;
+  private final JournalCodec<JournalRecord> codec;
   private final ArrayDeque<String> main;
   private final ArrayDeque<String> tempA;
   private final ArrayDeque<String> tempB;
   private final Path scratchFile;
 
   private ReviseState(
-      DiskJournal wal,
+      Journal journal,
+      JournalCodec<JournalRecord> codec,
       ArrayDeque<String> main,
       ArrayDeque<String> tempA,
       ArrayDeque<String> tempB,
       Path scratchFile) {
-    this.wal = wal;
+    this.journal = journal;
+    this.codec = codec;
     this.main = main;
     this.tempA = tempA;
     this.tempB = tempB;
     this.scratchFile = scratchFile;
   }
-
 
   public void move(Slot from, Slot to) {
     if (from == to) {
@@ -131,30 +130,31 @@ public class ReviseState {
     if (main.isEmpty()) {
       throw new NoSuchElementException("main stack is empty");
     }
-    main.pop(); // old message
+    main.pop();
     main.push(newMessage);
     dump();
   }
 
-  // resolution
-  public void commit() throws Exception {
-    List<Pop> pops = new ArrayList<>();
+  public void commit() {
+    int originalSize = main.size() + tempA.size() + tempB.size();
+
+    int dropCount = tempA.size() + tempB.size();
+
+    List<byte[]> batch = new ArrayList<>();
     for (int i = 0; i < main.size(); i++) {
-      pops.add(new Pop());
+      batch.add(codec.encode(new Pop()));
     }
-    wal.append(pops);
-
-    List<Push> pushes = new ArrayList<>();
+    for (int i = 0; i < dropCount; i++) {
+      batch.add(codec.encode(new JournalRecord.Drop()));
+    }
     while (!main.isEmpty()) {
-      pushes.add(new Push(main.removeLast()));
+      batch.add(codec.encode(new Push(main.removeLast())));
     }
-    wal.append(pushes);
 
-    List<Drop> drops = new ArrayList<>();
-    for (int i = 0; i < tempA.size() + tempB.size(); i++) {
-      drops.add(new Drop());
+    if (!batch.isEmpty()) {
+      journal.append(batch);
     }
-    wal.append(drops);
+
     try {
       Files.delete(scratchFile);
     } catch (IOException cause) {

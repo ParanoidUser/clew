@@ -1,8 +1,12 @@
-package dev.noid.clew;
+package dev.noid.clew.stack;
 
-import dev.noid.clew.JournalEntry.Drop;
-import dev.noid.clew.JournalEntry.Pop;
-import dev.noid.clew.JournalEntry.Push;
+import dev.noid.clew.JournalRecord;
+import dev.noid.clew.codec.JournalCodec;
+import dev.noid.clew.journal.JournalException;
+import dev.noid.clew.JournalRecord.Drop;
+import dev.noid.clew.JournalRecord.Pop;
+import dev.noid.clew.JournalRecord.Push;
+import dev.noid.clew.journal.Journal;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
@@ -18,28 +22,30 @@ public class ClewStack {
   private final Deque<String> projection = new ArrayDeque<>();
   private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
   private final Journal journal;
-  private long lastAppliedPosition = -1L;
+  private final JournalCodec<JournalRecord> codec;
+  private long lastSyncPosition = 0;
 
-  public ClewStack(Journal journal) {
+  public ClewStack(Journal journal, JournalCodec<JournalRecord> codec) {
     this.journal = journal;
+    this.codec = codec;
   }
 
   public void push(String message) throws JournalException {
-    long newPosition = journal.append(List.of(new Push(message)));
+    long newPosition = journal.append(List.of(codec.encode(new Push(message))));
     syncTo(newPosition);
   }
 
   public String pop() throws JournalException {
     lock.writeLock().lock();
     try {
-      syncToInternal(journal.getEndPosition());
+      syncToInternal(journal.currentPosition());
 
       if (projection.isEmpty()) {
         throw new NoSuchElementException("Stack is empty");
       }
 
       String message = projection.peekLast();
-      long newPosition = journal.append(List.of(new Pop()));
+      long newPosition = journal.append(List.of(codec.encode(new Pop())));
       syncToInternal(newPosition);
       return message;
     } finally {
@@ -48,7 +54,7 @@ public class ClewStack {
   }
 
   public String peek() throws JournalException {
-    syncTo(journal.getEndPosition());
+    syncTo(journal.currentPosition());
     lock.readLock().lock();
     try {
       if (projection.isEmpty()) {
@@ -62,7 +68,7 @@ public class ClewStack {
 
   public List<String> list() {
     try {
-      syncTo(journal.getEndPosition());
+      syncTo(journal.currentPosition());
     } catch (JournalException e) {
       throw new RuntimeException(e);
     }
@@ -75,7 +81,7 @@ public class ClewStack {
   }
 
   private void syncTo(long targetPosition) {
-    if (targetPosition <= lastAppliedPosition) {
+    if (targetPosition <= lastSyncPosition) {
       return;
     }
     lock.writeLock().lock();
@@ -87,12 +93,12 @@ public class ClewStack {
   }
 
   private void syncToInternal(long targetPosition) {
-    if (targetPosition <= lastAppliedPosition) {
+    if (targetPosition <= lastSyncPosition) {
       return;
     }
 
-    try (var stream = journal.openStream(lastAppliedPosition + 1)) {
-      stream.forEach(entry -> {
+    try (var stream = journal.openStream(lastSyncPosition)) {
+      stream.map(codec::decode).forEach(entry -> {
         switch (entry) {
           case Push(String msg) -> projection.addLast(msg);
           case Pop(), Drop() -> {
@@ -102,7 +108,7 @@ public class ClewStack {
           }
         }
       });
-      this.lastAppliedPosition = targetPosition;
+      this.lastSyncPosition = targetPosition;
     } catch (Exception cause) {
       throw new RuntimeException(cause);
     }

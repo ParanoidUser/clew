@@ -1,9 +1,8 @@
-package dev.noid.clew;
+package dev.noid.clew.cli;
 
-import java.io.IOException;
+import dev.noid.clew.stack.ClewLog;
+import dev.noid.clew.stack.ClewStack;
 import java.io.PrintStream;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -11,25 +10,22 @@ public class CommandHandler {
 
   private final String[] args;
   private final ClewStack stack;
-  private final DiskJournal wal;
-  private final Path scratchFile;
-  private final ReviseUi reviseUi;
+  private final ClewLog log;
+  private final ReviseHandler revise;
   private final PrintStream stdout;
   private final PrintStream stderr;
 
   public CommandHandler(
       String[] args,
       ClewStack stack,
-      DiskJournal wal,
-      Path scratchFile,
-      ReviseUi reviseUi,
+      ClewLog log,
+      ReviseHandler revise,
       PrintStream stdout,
       PrintStream stderr) {
     this.args = args;
     this.stack = stack;
-    this.wal = wal;
-    this.scratchFile = scratchFile;
-    this.reviseUi = reviseUi;
+    this.log = log;
+    this.revise = revise;
     this.stdout = stdout;
     this.stderr = stderr;
   }
@@ -40,12 +36,13 @@ public class CommandHandler {
       return 1;
     }
     String cmd = args[0];
-    if (!cmd.equals("revise") && Files.exists(scratchFile)) {
+    if (!cmd.equals("revise") && revise.isInProgress()) {
       stderr.println("error: revise in progress. Run 'clew revise' to continue or cancel.");
       return 1;
     }
     return switch (cmd) {
       case "ls" -> invokeList();
+      case "log" -> invokeLog();
       case "peek" -> invokePeek();
       case "pop" -> invokePop();
       case "push" -> invokePush(args.length > 1 ? args[1] : null);
@@ -59,8 +56,25 @@ public class CommandHandler {
 
   private int invokeList() {
     List<String> items = stack.list();
+    int top = items.size() - 1;
+    for (int i = top; i >= 0; i--) {
+      if (i == top) {
+        stdout.printf("[%d] \u25cb %s%n", i + 1, items.get(i));
+      } else {
+        stdout.printf("[%d] \u001b[2m\u25cb %s\u001b[0m%n", i + 1, items.get(i));
+      }
+    }
+    return 0;
+  }
+
+  private int invokeLog() {
+    List<String> items = log.list();
+    if (items.isEmpty()) {
+      stdout.println("no completed tasks");
+      return 0;
+    }
     for (int i = items.size() - 1; i >= 0; i--) {
-      stdout.printf("[%d] %s%n", i + 1, items.get(i));
+      stdout.printf("[%d] \u001b[2m\u2713 %s\u001b[0m%n", i + 1, items.get(i));
     }
     return 0;
   }
@@ -69,7 +83,7 @@ public class CommandHandler {
     try {
       stdout.println(stack.peek());
       return 0;
-    } catch (Exception cause) {
+    } catch (NoSuchElementException cause) {
       stderr.println("stack is empty");
       return 1;
     }
@@ -79,7 +93,7 @@ public class CommandHandler {
     try {
       stdout.println(stack.pop());
       return 0;
-    } catch (Exception cause) {
+    } catch (NoSuchElementException cause) {
       stderr.println("stack is empty");
       return 1;
     }
@@ -90,29 +104,19 @@ public class CommandHandler {
       stderr.println("push requires a message");
       return 1;
     }
-    try {
-      stack.push(message);
-      return 0;
-    } catch (Exception cause){
-      return 1;
-    }
+    stack.push(message);
+    return 0;
   }
 
   private int invokeRevise() {
     try {
-      if (!Files.exists(scratchFile) && stack.list().isEmpty()) {
+      if (!revise.isInProgress() && stack.list().isEmpty()) {
         stderr.println("stack is empty, nothing to revise");
         return 1;
       }
-      ReviseState state = Files.exists(scratchFile)
-          ? ReviseState.restore(wal, scratchFile)
-          : ReviseState.start(wal, scratchFile);
-      reviseUi.run(state);
+      revise.run();
       return 0;
-    } catch (IllegalStateException cause) {
-      stderr.println("error: " + cause.getMessage());
-      return 1;
-    } catch (IOException cause) {
+    } catch (Exception cause) {
       stderr.println("error: " + cause.getMessage());
       return 1;
     }
