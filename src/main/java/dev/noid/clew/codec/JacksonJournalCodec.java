@@ -4,22 +4,21 @@ import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import dev.noid.clew.JournalRecord;
+import dev.noid.clew.TaskEvent;
 import java.io.IOException;
 
-public final class JacksonJournalCodec<T extends JournalRecord> implements JournalCodec<T> {
+public final class JacksonJournalCodec<T> implements JournalCodec<T> {
 
-  /**
-   * The "Mix-in" interface acts as a shadow for the real record. Jackson will apply these annotations to JournalRecord
-   * at runtime.
-   */
   @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
   @JsonSubTypes({
-      @JsonSubTypes.Type(value = JournalRecord.Push.class, name = "push"),
-      @JsonSubTypes.Type(value = JournalRecord.Pop.class, name = "pop"),
-      @JsonSubTypes.Type(value = JournalRecord.Drop.class, name = "drop")
+      @JsonSubTypes.Type(value = TaskEvent.TaskCreated.class, name = "task_created"),
+      @JsonSubTypes.Type(value = TaskEvent.TaskCompleted.class, name = "task_completed"),
+      @JsonSubTypes.Type(value = TaskEvent.TaskDropped.class, name = "task_dropped"),
+      @JsonSubTypes.Type(value = TaskEvent.TaskActivated.class, name = "task_activated"),
+      @JsonSubTypes.Type(value = TaskEvent.TaskDeactivated.class, name = "task_deactivated"),
+      @JsonSubTypes.Type(value = TaskEvent.TaskContentUpdated.class, name = "task_content_updated"),
   })
-  private interface JournalRecordMixin {}
+  private interface TaskEventMixin {}
 
   private final ObjectMapper mapper;
   private final Class<T> baseClass;
@@ -27,7 +26,7 @@ public final class JacksonJournalCodec<T extends JournalRecord> implements Journ
   public JacksonJournalCodec(Class<T> baseClass) {
     this.baseClass = baseClass;
     this.mapper = new ObjectMapper()
-        .addMixIn(JournalRecord.class, JournalRecordMixin.class)
+        .addMixIn(TaskEvent.class, TaskEventMixin.class)
         .findAndRegisterModules();
   }
 

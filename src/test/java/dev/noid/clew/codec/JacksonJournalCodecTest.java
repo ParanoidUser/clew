@@ -2,50 +2,72 @@ package dev.noid.clew.codec;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import dev.noid.clew.JournalRecord;
-import dev.noid.clew.JournalRecord.Drop;
-import dev.noid.clew.JournalRecord.Pop;
-import dev.noid.clew.JournalRecord.Push;
+import dev.noid.clew.TaskEvent;
+import dev.noid.clew.TaskEvent.*;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 class JacksonJournalCodecTest {
 
-  private final JacksonJournalCodec<JournalRecord> codec = new JacksonJournalCodec<>(JournalRecord.class);
+  private final JacksonJournalCodec<TaskEvent> codec = new JacksonJournalCodec<>(TaskEvent.class);
 
   @Test
-  @DisplayName("Push round-trips with correct message")
-  void pushRoundTrip() {
-    Push original = new Push("hello");
-    JournalRecord decoded = codec.decode(codec.encode(original));
+  @DisplayName("TaskCreated round-trips")
+  void taskCreatedRoundTrip() {
+    TaskCreated original = new TaskCreated(1000L, "id-1", "hello");
+    TaskEvent decoded = codec.decode(codec.encode(original));
     assertEquals(original, decoded);
   }
 
   @Test
-  @DisplayName("Pop round-trips")
-  void popRoundTrip() {
-    Pop original = new Pop();
-    JournalRecord decoded = codec.decode(codec.encode(original));
+  @DisplayName("TaskCompleted round-trips")
+  void taskCompletedRoundTrip() {
+    TaskCompleted original = new TaskCompleted(1000L, "id-1");
+    TaskEvent decoded = codec.decode(codec.encode(original));
     assertEquals(original, decoded);
   }
 
   @Test
-  @DisplayName("Drop round-trips")
-  void dropRoundTrip() {
-    Drop original = new Drop();
-    JournalRecord decoded = codec.decode(codec.encode(original));
+  @DisplayName("TaskDropped round-trips")
+  void taskDroppedRoundTrip() {
+    TaskDropped original = new TaskDropped(1000L, "id-1");
+    TaskEvent decoded = codec.decode(codec.encode(original));
     assertEquals(original, decoded);
   }
 
   @Test
-  @DisplayName("special characters in message survive round-trip")
+  @DisplayName("TaskActivated round-trips")
+  void taskActivatedRoundTrip() {
+    TaskActivated original = new TaskActivated(1000L, "id-1");
+    TaskEvent decoded = codec.decode(codec.encode(original));
+    assertEquals(original, decoded);
+  }
+
+  @Test
+  @DisplayName("TaskDeactivated round-trips")
+  void taskDeactivatedRoundTrip() {
+    TaskDeactivated original = new TaskDeactivated(1000L, "id-1");
+    TaskEvent decoded = codec.decode(codec.encode(original));
+    assertEquals(original, decoded);
+  }
+
+  @Test
+  @DisplayName("TaskContentUpdated round-trips")
+  void taskContentUpdatedRoundTrip() {
+    TaskContentUpdated original = new TaskContentUpdated(1000L, "id-1", "new desc");
+    TaskEvent decoded = codec.decode(codec.encode(original));
+    assertEquals(original, decoded);
+  }
+
+  @Test
+  @DisplayName("special characters in description survive round-trip")
   void specialCharacters() {
     String nasty = "it's a \"test\" with \\backslashes\\ and\nnewlines and \uD83D\uDE00 emoji";
-    Push original = new Push(nasty);
-    JournalRecord decoded = codec.decode(codec.encode(original));
-    assertInstanceOf(Push.class, decoded);
-    assertEquals(nasty, ((Push) decoded).msg());
+    TaskCreated original = new TaskCreated(1000L, "id-1", nasty);
+    TaskEvent decoded = codec.decode(codec.encode(original));
+    assertInstanceOf(TaskCreated.class, decoded);
+    assertEquals(nasty, ((TaskCreated) decoded).description());
   }
 
   @Test

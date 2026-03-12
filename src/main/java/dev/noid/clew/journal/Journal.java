@@ -1,7 +1,5 @@
 package dev.noid.clew.journal;
 
-import dev.noid.clew.JournalRecord;
-import dev.noid.clew.codec.JournalCodec;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -94,7 +92,4 @@ public interface Journal extends AutoCloseable {
   @Override
   void close();
 
-  default <T extends JournalRecord> TypedJournal<T> typed(JournalCodec<T> codec) {
-    return new TypedJournal<>(this, codec);
-  }
 }

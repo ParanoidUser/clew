@@ -1,8 +1,6 @@
 package dev.noid.clew.codec;
 
-import dev.noid.clew.JournalRecord;
-
-public interface JournalCodec<T extends JournalRecord> {
+public interface JournalCodec<T> {
 
   byte[] encode(T entry);
 

@@ -2,25 +2,30 @@ package dev.noid.clew.stack;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import dev.noid.clew.JournalRecord;
-import dev.noid.clew.JournalRecord.Push;
+import dev.noid.clew.TaskEvent;
+import dev.noid.clew.TaskEvent.*;
 import dev.noid.clew.codec.JacksonJournalCodec;
 import dev.noid.clew.codec.JournalCodec;
+import dev.noid.clew.projection.Backlog;
+import dev.noid.clew.projection.CompletedTasks;
 import dev.noid.clew.stack.ReviseState.Slot;
 import dev.noid.clew.journal.file.FileJournal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+// Stack under test (bottom → top): ["bottom", "middle", "top"]
+
 class ReviseStateTest {
 
-  private static final JournalCodec<JournalRecord> CODEC = new JacksonJournalCodec<>(JournalRecord.class);
+  private static final JournalCodec<TaskEvent> CODEC = new JacksonJournalCodec<>(TaskEvent.class);
 
   private FileJournal journal;
   private Path scratchFile;
@@ -28,10 +33,21 @@ class ReviseStateTest {
   @BeforeEach
   void setUp(@TempDir Path temp) {
     journal = new FileJournal(temp.resolve("wal.log"), 4096);
+
+    long ts = System.currentTimeMillis();
+    String bottomId = UUID.randomUUID().toString();
+    String middleId = UUID.randomUUID().toString();
+    String topId = UUID.randomUUID().toString();
+
     journal.append(List.of(
-        CODEC.encode(new Push("bottom")),
-        CODEC.encode(new Push("middle")),
-        CODEC.encode(new Push("top"))
+        CODEC.encode(new TaskCreated(ts, bottomId, "bottom")),
+        CODEC.encode(new TaskActivated(ts, bottomId)),
+        CODEC.encode(new TaskDeactivated(ts, bottomId)),
+        CODEC.encode(new TaskCreated(ts, middleId, "middle")),
+        CODEC.encode(new TaskActivated(ts, middleId)),
+        CODEC.encode(new TaskDeactivated(ts, middleId)),
+        CODEC.encode(new TaskCreated(ts, topId, "top")),
+        CODEC.encode(new TaskActivated(ts, topId))
     ));
     scratchFile = temp.resolve("revise.tmp");
   }
@@ -190,7 +206,7 @@ class ReviseStateTest {
   }
 
   @Test
-  @DisplayName("commit with dropped items writes Drop records, not Pop records")
+  @DisplayName("commit with dropped items emits TaskDropped, not TaskCompleted")
   void commitWritesDropForDiscardedItems() {
     long positionBeforeRevise = journal.currentPosition();
 
@@ -198,19 +214,46 @@ class ReviseStateTest {
     state.move(Slot.MAIN, Slot.A);  // discard "top"
     state.commit();
 
-    // read only the records written by commit
-    List<JournalRecord> commitRecords;
+    // read only the events written by commit
+    List<TaskEvent> commitEvents;
     try (var stream = journal.openStream(positionBeforeRevise)) {
-      commitRecords = stream.map(CODEC::decode).toList();
+      commitEvents = stream.map(CODEC::decode).toList();
     }
 
-    // original stack had 3 items: 2 kept in main after move, 1 discarded in tempA
-    // expect: 3x Pop (clear original stack) + 2x Push (re-push main) + 1x Drop (discard tempA item)
-    long dropCount = commitRecords.stream().filter(r -> r instanceof JournalRecord.Drop).count();
-    long popCount = commitRecords.stream().filter(r -> r instanceof JournalRecord.Pop).count();
+    long dropCount = commitEvents.stream().filter(e -> e instanceof TaskDropped).count();
+    long completedCount = commitEvents.stream().filter(e -> e instanceof TaskCompleted).count();
 
-    assertEquals(1, dropCount, "Discarded items should produce Drop records, not Pop");
-    assertEquals(2, popCount, "Only kept items should produce Pop records before re-push");
+    assertTrue(dropCount >= 1, "Discarded items should produce TaskDropped events");
+    assertEquals(0, completedCount, "No task was completed — no TaskCompleted events expected");
+  }
+
+  @Test
+  @DisplayName("revise-discarded task does not appear in completed log")
+  void discardedTaskMustNotAppearInCompletedLog() {
+    ReviseState state = ReviseState.start(journal, CODEC, scratchFile);
+    state.move(Slot.MAIN, Slot.A);  // discard "top"
+    state.commit();
+
+    CompletedTasks completedTasks = new CompletedTasks(journal, CODEC);
+    assertEquals(List.of(), completedTasks.tasks());
+  }
+
+  @Test
+  @DisplayName("pure reorder via revise does not mark tasks as completed")
+  void reorderedTasksMustNotAppearInCompletedLog() {
+    ReviseState state = ReviseState.start(journal, CODEC, scratchFile);
+    state.move(Slot.MAIN, Slot.A);
+    state.move(Slot.MAIN, Slot.A);
+    state.move(Slot.MAIN, Slot.A);
+    state.move(Slot.A, Slot.MAIN);
+    state.move(Slot.A, Slot.MAIN);
+    state.move(Slot.A, Slot.MAIN);
+    state.commit();
+
+    CompletedTasks completedTasks = new CompletedTasks(journal, CODEC);
+    Backlog backlog = new Backlog(journal, CODEC);
+    assertEquals(List.of(), completedTasks.tasks(), "no task was completed — log must be empty");
+    assertEquals(3, backlog.tasks().size(), "all three tasks must remain in the backlog");
   }
 
   private List<String> replayMain() {
