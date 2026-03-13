@@ -12,7 +12,7 @@ public final class SegmentIterator implements Iterator<byte[]> {
   private final long limit;
   private SegmentFrame nextFrame;
 
-  public SegmentIterator(MemorySegment segment, long startOffset, long limit) {
+  SegmentIterator(MemorySegment segment, long startOffset, long limit) {
     this.segment = segment;
     this.currentOffset = startOffset;
     this.limit = limit;
@@ -28,12 +28,10 @@ public final class SegmentIterator implements Iterator<byte[]> {
     }
     SegmentFrame candidate = new SegmentFrame(segment, currentOffset);
     if (!candidate.isPresent()) {
-      throw new JournalCorruptionException(
-          "Missing frame within committed region at offset " + currentOffset);
+      throw new JournalCorruptionException("Missing frame within committed region at offset " + currentOffset);
     }
     if (!candidate.isValid()) {
-      throw new JournalCorruptionException(
-          "Corruption detected at offset " + currentOffset);
+      throw new JournalCorruptionException("Corruption detected at offset " + currentOffset);
     }
     nextFrame = candidate;
     return true;
@@ -44,10 +42,9 @@ public final class SegmentIterator implements Iterator<byte[]> {
     if (!hasNext()) {
       throw new NoSuchElementException("End of journal reached");
     }
-    byte[] payload = nextFrame.readPayload();
-    currentOffset += nextFrame.totalSize();
+    byte[] payload = nextFrame.payload();
+    currentOffset += nextFrame.size() + SegmentFrame.OVERHEAD;
     nextFrame = null;
     return payload;
   }
-
 }

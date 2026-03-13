@@ -1,10 +1,5 @@
 package dev.noid.clew.journal.file;
 
-import dev.noid.clew.journal.JournalCorruptionException;
-import dev.noid.clew.journal.file.FileJournal;
-import dev.noid.clew.journal.file.SegmentFrame;
-import java.nio.file.Path;
-import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -13,9 +8,9 @@ import org.junit.jupiter.api.Test;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-import org.junit.jupiter.api.io.TempDir;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 
 class SegmentFrameTest {
 
@@ -37,127 +32,167 @@ class SegmentFrameTest {
   @DisplayName("write then read back produces identical payload")
   void writeAndRead() {
     byte[] original = "Hello World".getBytes();
-    long bytesWritten = SegmentFrame.write(segment, 0, original);
+    SegmentFrame frame = SegmentFrame.fill(segment, 0, original);
 
-    SegmentFrame frame = new SegmentFrame(segment, 0);
-    assertEquals(original.length + SegmentFrame.OVERHEAD, bytesWritten);
     assertTrue(frame.isPresent());
     assertTrue(frame.isValid());
-    assertArrayEquals(original, frame.readPayload());
+    assertEquals(original.length, frame.size());
+    assertArrayEquals(original, frame.payload());
   }
 
   @Test
   @DisplayName("two sequential frames are independently readable")
   void sequentialFrames() {
     byte[] first = "alpha".getBytes();
-    byte[] second = "beta".getBytes();
+    SegmentFrame frame1 = SegmentFrame.fill(segment, 0, first);
 
-    long offset2 = SegmentFrame.write(segment, 0, first);
-    SegmentFrame.write(segment, offset2, second);
-
-    SegmentFrame frame1 = new SegmentFrame(segment, 0);
     assertTrue(frame1.isPresent());
     assertTrue(frame1.isValid());
-    assertArrayEquals(first, frame1.readPayload());
+    assertEquals(first.length, frame1.size());
+    assertArrayEquals(first, frame1.payload());
 
-    SegmentFrame frame2 = new SegmentFrame(segment, offset2);
+    byte[] second = "beta".getBytes();
+    SegmentFrame frame2 = SegmentFrame.fill(segment, frame1.size() + SegmentFrame.OVERHEAD, second);
+
     assertTrue(frame2.isPresent());
     assertTrue(frame2.isValid());
-    assertArrayEquals(second, frame2.readPayload());
+    assertEquals(second.length, frame2.size());
+    assertArrayEquals(second, frame2.payload());
   }
 
   @Test
   @DisplayName("null payload throws IllegalArgumentException")
   void rejectsNullPayload() {
-    assertThrows(IllegalArgumentException.class, () -> SegmentFrame.write(segment, 0, null));
+    assertThrows(IllegalArgumentException.class, () -> SegmentFrame.fill(segment, 0, null));
   }
 
   @Test
   @DisplayName("empty payload round-trips correctly")
   void emptyPayloadRoundTrip() {
-    long written = SegmentFrame.write(segment, 0, new byte[0]);
+    SegmentFrame empty = SegmentFrame.fill(segment, 0, new byte[0]);
 
-    SegmentFrame frame = new SegmentFrame(segment, 0);
-    assertEquals(SegmentFrame.OVERHEAD, written);
-    assertTrue(frame.isPresent());
-    assertTrue(frame.isValid());
-    assertArrayEquals(new byte[0], frame.readPayload());
+    assertTrue(empty.isPresent());
+    assertTrue(empty.isValid());
+    assertEquals(0, empty.size());
+    assertArrayEquals(new byte[0], empty.payload());
   }
 
   @Test
-  @DisplayName("flipped byte in payload is detected as invalid")
-  void detectCorruption() {
-    SegmentFrame.write(segment, 0, "Pure Data".getBytes());
-    SegmentFrame frame = new SegmentFrame(segment, 0);
+  @DisplayName("corrupted magic field is detected as not present and invalid")
+  void corruptedMagic() {
+    byte[] original = "data".getBytes();
+    SegmentFrame frame = SegmentFrame.fill(segment, 0, original);
     assertTrue(frame.isValid());
 
-    // offset 0-3: magic, 4-7: length, 8+: payload — target a payload byte
-    segment.set(ValueLayout.JAVA_BYTE, 9, (byte) 'X');
-    SegmentFrame corrupted = new SegmentFrame(segment, 0);
-    assertFalse(corrupted.isValid());
+    // Offset: [magic:0-3][length:4-7][payload:8-11][checksum:12-15]
+    segment.set(ValueLayout.JAVA_BYTE, 0, (byte) 'b');
+
+    assertFalse(frame.isPresent());
+    assertFalse(frame.isValid());
+    assertEquals(original.length, frame.size());
+    assertArrayEquals(original, frame.payload());
   }
 
   @Test
-  @DisplayName("corrupt length field in present frame throws corruption exception on validation")
-  void corruptLengthInPresentFrame() {
-    SegmentFrame.write(segment, 0, "data".getBytes());
+  @DisplayName("corrupted length field to valid in-bounds value is detected as invalid")
+  void corruptedLength_toValidRange() {
+    byte[] original = "data".getBytes();
+    SegmentFrame frame = SegmentFrame.fill(segment, 0, original);
+    assertTrue(frame.isValid());
 
-    // corrupt the length field — magic stays intact at offset 0
-    segment.set(ValueLayout.JAVA_INT_UNALIGNED, Integer.BYTES, -1);
+    // Offset: [magic:0-3][length:4-7][payload:8-11][checksum:12-15]
+    segment.set(ValueLayout.JAVA_INT_UNALIGNED, 4, original.length - 1);
 
-    SegmentFrame frame = new SegmentFrame(segment, 0);
     assertTrue(frame.isPresent());
-    assertThrows(JournalCorruptionException.class, frame::isValid);
+    assertFalse(frame.isValid());
+    assertEquals(original.length - 1, frame.size());
+    assertArrayEquals("dat".getBytes(), frame.payload());
+  }
+
+  @Test
+  @DisplayName("corrupted length field out of valid bounds is detected as invalid")
+  void corruptedLength_outOfRange() {
+    byte[] original = "data".getBytes();
+    SegmentFrame frame = SegmentFrame.fill(segment, 0, original);
+    assertTrue(frame.isValid());
+
+    // Offset: [magic:0-3][length:4-7][payload:8-11][checksum:12-15]
+    segment.set(ValueLayout.JAVA_INT_UNALIGNED, 4, 12);
+
+    assertTrue(frame.isPresent());
+    assertFalse(frame.isValid());
+    assertEquals(12, frame.size());
+    assertArrayEquals(new byte[]{'d', 'a', 't', 'a', -89, -6, -18, 88, 0, 0, 0, 0}, frame.payload()); // OS-dependent?
+  }
+
+  @Test
+  @DisplayName("corrupted length field to negative value is detected as invalid")
+  void corruptedLength_toNegativeRange() {
+    byte[] original = "data".getBytes();
+    SegmentFrame frame = SegmentFrame.fill(segment, 0, original);
+    assertTrue(frame.isValid());
+
+    // Offset: [magic:0-3][length:4-7][payload:8-11][checksum:12-15]
+    segment.set(ValueLayout.JAVA_INT_UNALIGNED, 4, -42);
+
+    assertTrue(frame.isPresent());
+    assertFalse(frame.isValid());
+    assertEquals(-42, frame.size());
+    assertNull(frame.payload());
+  }
+
+  @Test
+  @DisplayName("corrupted payload is detected as invalid")
+  void corruptedPayload() {
+    byte[] original = "data".getBytes();
+    SegmentFrame frame = SegmentFrame.fill(segment, 0, original);
+    assertTrue(frame.isValid());
+
+    // Offset: [magic:0-3][length:4-7][payload:8-11][checksum:12-15]
+    segment.set(ValueLayout.JAVA_BYTE, 9, (byte) '_');
+
+    assertTrue(frame.isPresent());
+    assertFalse(frame.isValid());
+    assertEquals(original.length, frame.size());
+    assertArrayEquals("d_ta".getBytes(), frame.payload());
   }
 
   @Test
   @DisplayName("corrupted checksum field is detected as invalid")
-  void corruptedChecksum_isDetected() {
-    SegmentFrame.write(segment, 0, "payload".getBytes());
-    SegmentFrame frame = new SegmentFrame(segment, 0);
-
-    // corrupt the 4-byte checksum at the tail of the frame
-    long checksumOffset = frame.totalSize() - Integer.BYTES;
-    segment.set(ValueLayout.JAVA_INT_UNALIGNED, checksumOffset, 0xDEADBEEF);
-
-    SegmentFrame corrupted = new SegmentFrame(segment, 0);
-    assertTrue(corrupted.isPresent());
-    assertFalse(corrupted.isValid());
-  }
-
-  @Test
-  @DisplayName("corrupted length to valid in-bounds value is detected")
-  void corruptedLength_toValidRange_isDetected() {
-    SegmentFrame.write(segment, 0, "Hello World".getBytes()); // 11 bytes
-    SegmentFrame frame = new SegmentFrame(segment, 0);
+  void corruptedChecksum() {
+    byte[] original = "data".getBytes();
+    SegmentFrame frame = SegmentFrame.fill(segment, 0, original);
     assertTrue(frame.isValid());
 
-    // corrupt length field (at offset MAGIC_SIZE=4) from 11 to 5 — still in bounds
-    segment.set(ValueLayout.JAVA_INT_UNALIGNED, Integer.BYTES, 5);
+    // Offset: [magic:0-3][length:4-7][payload:8-11][checksum:12-15]
+    segment.set(ValueLayout.JAVA_INT_UNALIGNED, 12, 0xDEADBEEF);
 
-    SegmentFrame corrupted = new SegmentFrame(segment, 0);
-    assertTrue(corrupted.isPresent()); // magic intact
-    assertFalse(corrupted.isValid());
+    assertTrue(frame.isPresent());
+    assertFalse(frame.isValid());
+    assertEquals(original.length, frame.size());
+    assertArrayEquals(original, frame.payload());
   }
 
   @Test
-  @DisplayName("uninitialized memory reports not present with zero totalSize")
+  @DisplayName("uninitialized memory detected as not present and invalid")
   void uninitializedMemory() {
     SegmentFrame frame = new SegmentFrame(segment, 128);
 
     assertFalse(frame.isPresent());
-    assertEquals(0, frame.totalSize());
-    assertThrows(IllegalStateException.class, frame::readPayload);
+    assertFalse(frame.isValid());
+    assertEquals(0, frame.size());
+    assertArrayEquals(new byte[0], frame.payload());
   }
 
   @Test
-  @DisplayName("offset at segment boundary reports not present with zero totalSize")
+  @DisplayName("offset at segment boundary reports not present")
   void offsetAtBoundary() {
     MemorySegment small = arena.allocate(100);
     SegmentFrame frame = new SegmentFrame(small, 98);
 
     assertFalse(frame.isPresent());
-    assertEquals(0, frame.totalSize());
-    assertThrows(IllegalStateException.class, frame::readPayload);
+    assertFalse(frame.isValid());
+    assertEquals(-1, frame.size());
+    assertNull(frame.payload());
   }
 }

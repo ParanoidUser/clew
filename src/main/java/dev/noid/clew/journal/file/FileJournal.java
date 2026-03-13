@@ -34,9 +34,9 @@ public final class FileJournal implements Journal {
         this.segment = channel.map(FileChannel.MapMode.READ_WRITE, 0, maxSize, arena);
       }
       this.committedPosition = recoverPosition();
-    } catch (IOException e) {
+    } catch (IOException cause) {
       arena.close();
-      throw new JournalException("Failed to open journal at " + filePath, e);
+      throw new JournalException("Failed to open journal at " + filePath, cause);
     }
   }
 
@@ -46,24 +46,25 @@ public final class FileJournal implements Journal {
       throw new IllegalArgumentException("Records must not be null or empty");
     }
 
-    long required = 0;
+    long totalSize = 0;
     for (byte[] payload : records) {
       if (payload == null) {
         throw new IllegalArgumentException("Record payload must not be null");
       }
-      required += (long) payload.length + SegmentFrame.OVERHEAD;
-    }
-    if (committedPosition + required > segment.byteSize()) {
-      throw new IllegalStateException("Journal capacity exceeded");
+      totalSize += (long) payload.length + SegmentFrame.OVERHEAD;
     }
 
     long writeHead = committedPosition;
+    if (writeHead + totalSize > segment.byteSize()) {
+      throw new IllegalStateException("Journal capacity exceeded");
+    }
+
     for (byte[] payload : records) {
-      writeHead += SegmentFrame.write(segment, writeHead, payload);
+      writeHead += SegmentFrame.fill(segment, writeHead, payload).size() + SegmentFrame.OVERHEAD;
     }
     segment.asSlice(committedPosition, writeHead - committedPosition).force();
     committedPosition = writeHead;
-    return committedPosition;
+    return writeHead;
   }
 
   @Override
@@ -71,16 +72,17 @@ public final class FileJournal implements Journal {
     if (fromPosition < 0 || fromPosition > committedPosition) {
       throw new IllegalArgumentException("Invalid position: " + fromPosition);
     }
+
     if (fromPosition > 0 && fromPosition < committedPosition) {
       if (!new SegmentFrame(segment, fromPosition).isPresent()) {
-        throw new IllegalArgumentException(
-            "Position does not align to a frame boundary: " + fromPosition);
+        throw new IllegalArgumentException("Position does not align to a frame boundary: " + fromPosition);
       }
     }
+
     SegmentIterator iterator = new SegmentIterator(segment, fromPosition, committedPosition);
-    return StreamSupport.stream(
-        Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED | Spliterator.NONNULL | Spliterator.IMMUTABLE),
-        false);
+    return StreamSupport.stream(Spliterators.spliteratorUnknownSize(iterator,
+        Spliterator.ORDERED | Spliterator.NONNULL | Spliterator.IMMUTABLE
+    ), false);
   }
 
   @Override
@@ -100,7 +102,7 @@ public final class FileJournal implements Journal {
       if (!frame.isPresent() || !frame.isValid()) {
         return offset;
       }
-      offset += frame.totalSize();
+      offset += frame.size() + SegmentFrame.OVERHEAD;
     }
   }
 }
