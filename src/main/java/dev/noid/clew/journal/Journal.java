@@ -36,8 +36,8 @@ import java.util.stream.Stream;
  *
  * <h3>Resource Management</h3>
  * <p>
- * Implementations may hold system resources (file handles, network connections). Callers <b>must</b> close streams
- * returned by {@link #openStream(long)} using {@code try-with-resources}.
+ * Implementations may hold system resources (file handles, network connections) and must be closed via
+ * {@link #close()} or {@code try-with-resources}.
  *
  * @see JournalException
  * @see JournalCorruptionException
@@ -60,15 +60,14 @@ public interface Journal extends AutoCloseable {
   /**
    * Opens a forward-reading stream of records starting at the given position.
    * <p>
-   * The returned stream is lazy and backed by I/O resources. Callers <b>must</b> close it using
-   * {@code try-with-resources}. Corruption detected during iteration is signaled by
+   * The returned stream is lazy. Corruption detected during iteration is signaled by
    * {@link JournalCorruptionException}.
    *
    * @param fromPosition an opaque position cursor: either {@code 0} to read from the beginning, or a value previously
    *                     returned by {@link #append} or {@link #currentPosition}.
    * @return a stream of records; empty if the position is at the current end. Corruption detected during iteration
    * throws {@link JournalCorruptionException}.
-   * @throws IllegalArgumentException if {@code fromPosition} was not produced by this journal.
+   * @throws IllegalArgumentException if {@code fromPosition} is not a valid position for this journal.
    * @throws JournalException         if the storage layer cannot be read.
    */
   Stream<byte[]> openStream(long fromPosition);

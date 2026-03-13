@@ -10,7 +10,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.util.Spliterator;
+import java.util.Spliterators;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 public final class FileJournal implements Journal {
 
@@ -43,22 +46,41 @@ public final class FileJournal implements Journal {
       throw new IllegalArgumentException("Records must not be null or empty");
     }
 
+    long required = 0;
+    for (byte[] payload : records) {
+      if (payload == null) {
+        throw new IllegalArgumentException("Record payload must not be null");
+      }
+      required += (long) payload.length + SegmentFrame.OVERHEAD;
+    }
+    if (committedPosition + required > segment.byteSize()) {
+      throw new IllegalStateException("Journal capacity exceeded");
+    }
+
     long writeHead = committedPosition;
     for (byte[] payload : records) {
-      SegmentFrame frame = new SegmentFrame(segment, writeHead);
-      writeHead += frame.write(payload);
+      writeHead += SegmentFrame.write(segment, writeHead, payload);
     }
-    segment.force();
+    segment.asSlice(committedPosition, writeHead - committedPosition).force();
     committedPosition = writeHead;
     return committedPosition;
   }
 
   @Override
   public Stream<byte[]> openStream(long fromPosition) {
-    if (fromPosition < 0) {
-      throw new IllegalArgumentException("Position must not be negative: %d".formatted(fromPosition));
+    if (fromPosition < 0 || fromPosition > committedPosition) {
+      throw new IllegalArgumentException("Invalid position: " + fromPosition);
     }
-    return new SegmentScanner(segment, fromPosition, committedPosition).stream();
+    if (fromPosition > 0 && fromPosition < committedPosition) {
+      if (!new SegmentFrame(segment, fromPosition).isPresent()) {
+        throw new IllegalArgumentException(
+            "Position does not align to a frame boundary: " + fromPosition);
+      }
+    }
+    SegmentIterator iterator = new SegmentIterator(segment, fromPosition, committedPosition);
+    return StreamSupport.stream(
+        Spliterators.spliteratorUnknownSize(iterator, Spliterator.ORDERED | Spliterator.NONNULL | Spliterator.IMMUTABLE),
+        false);
   }
 
   @Override
@@ -67,7 +89,7 @@ public final class FileJournal implements Journal {
   }
 
   @Override
-  public void close() {
+  public synchronized void close() {
     arena.close();
   }
 

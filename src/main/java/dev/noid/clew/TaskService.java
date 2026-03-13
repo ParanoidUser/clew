@@ -3,6 +3,8 @@ package dev.noid.clew;
 import dev.noid.clew.cli.ReviseHandler;
 import dev.noid.clew.projection.Backlog;
 import dev.noid.clew.strategy.LifoStrategy;
+import dev.noid.clew.workspace.ProjectLock;
+import java.nio.file.Path;
 import java.util.NoSuchElementException;
 
 public class TaskService {
@@ -10,45 +12,53 @@ public class TaskService {
   private final Backlog backlog;
   private final LifoStrategy strategy;
   private final ReviseHandler revise;
+  private final Path lockFile;
 
-  public TaskService(Backlog backlog, LifoStrategy strategy, ReviseHandler revise) {
+  public TaskService(Backlog backlog, LifoStrategy strategy, ReviseHandler revise, Path lockFile) {
     this.backlog = backlog;
     this.strategy = strategy;
     this.revise = revise;
+    this.lockFile = lockFile;
   }
 
   public void handleAdd(String message) {
-    checkLock();
-    if (message == null) {
-      throw new IllegalArgumentException("Add requires a message");
+    try (ProjectLock ignored = ProjectLock.acquire(lockFile)) {
+      checkPlanNotActive();
+      if (message == null) {
+        throw new IllegalArgumentException("Add requires a message");
+      }
+      strategy.addTask(message);
+      System.out.printf("\u001b[1m→ %s\u001b[0m%n", message);
     }
-    strategy.addTask(message);
-    System.out.printf("\u001b[1m→ %s\u001b[0m%n", message);
   }
 
   public void handleDone() {
-    checkLock();
-    try {
-      String completed = strategy.completeTask();
-      System.out.printf("\u001b[32m✓ %s\u001b[0m%n", completed);
-    } catch (NoSuchElementException cause) {
-      throw new IllegalStateException("Task list is empty");
-    }
-    try {
-      System.out.printf("\u001b[1m→ %s\u001b[0m%n", strategy.activeTask());
-    } catch (NoSuchElementException cause) {
-      // ignore if next task is empty
+    try (ProjectLock ignored = ProjectLock.acquire(lockFile)) {
+      checkPlanNotActive();
+      try {
+        String completed = strategy.completeTask();
+        System.out.printf("\u001b[32m✓ %s\u001b[0m%n", completed);
+      } catch (NoSuchElementException cause) {
+        throw new IllegalStateException("Task list is empty");
+      }
+      try {
+        System.out.printf("\u001b[1m→ %s\u001b[0m%n", strategy.activeTask());
+      } catch (NoSuchElementException cause) {
+        // ignore if next task is empty
+      }
     }
   }
 
   public void handlePlan() {
-    if (!revise.isInProgress() && backlog.tasks().isEmpty()) {
-      throw new IllegalStateException("Task list is empty");
+    try (ProjectLock ignored = ProjectLock.acquire(lockFile)) {
+      if (!revise.isInProgress() && backlog.tasks().isEmpty()) {
+        throw new IllegalStateException("Task list is empty");
+      }
+      revise.run();
     }
-    revise.run();
   }
 
-  private void checkLock() {
+  private void checkPlanNotActive() {
     if (revise.isInProgress()) {
       throw new IllegalStateException("Task plan is in progress. Save or cancel to continue.");
     }

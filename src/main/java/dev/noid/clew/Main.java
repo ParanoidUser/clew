@@ -17,6 +17,7 @@ public class Main {
 
   static void main(String[] args) {
     Path clewDir = Path.of(System.getProperty("user.home"), ".clew");
+    Path lockFile = clewDir.resolve("lock");
     FileJournal journal = new FileJournal(clewDir.resolve("wal"), 10 * 1024 * 1024);
 
     JournalCodec<TaskEvent> codec = new JacksonJournalCodec<>(TaskEvent.class);
@@ -46,7 +47,7 @@ public class Main {
       }
     };
 
-    TaskService service = new TaskService(backlog, strategy, revise);
+    TaskService service = new TaskService(backlog, strategy, revise, lockFile);
     ConsolePresenter presenter = new ConsolePresenter();
 
     UserIntent intent = CliRegistry.parse(args);

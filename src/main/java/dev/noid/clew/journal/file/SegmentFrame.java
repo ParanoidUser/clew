@@ -8,37 +8,34 @@ import java.util.zip.CRC32C;
 /**
  * A single record frame in the journal's binary format.
  * <p>
- * Layout: {@code [length:4][payload:N][checksum:4]}
+ * Layout: {@code [magic:4][length:4][payload:N][checksum:4]}
  * <p>
- * A frame is <b>present</b> if there is enough space for the header and the length field is non-zero.
- * A frame is <b>valid</b> if it is present and the stored checksum matches the computed checksum.
+ * A frame is <b>present</b> if the magic constant {@code "clew"} is found at the frame offset.
+ * A frame is <b>valid</b> if it is present, the length field is in bounds, and the stored checksum
+ * matches the computed checksum over the magic, length, and payload fields.
  */
 public final class SegmentFrame {
 
+  private static final int FRAME_MAGIC = 0x636C6577; // "clew"
+  private static final int MAGIC_SIZE = 4;
   private static final int LENGTH_SIZE = 4;
   private static final int CHECKSUM_SIZE = 4;
-  public static final int OVERHEAD = LENGTH_SIZE + CHECKSUM_SIZE;
+  public static final int OVERHEAD = MAGIC_SIZE + LENGTH_SIZE + CHECKSUM_SIZE;
 
   private final MemorySegment segment;
   private final long offset;
+  private int cachedLength = -1;
 
-  public SegmentFrame(MemorySegment segment, long offset) {
+  SegmentFrame(MemorySegment segment, long offset) {
     this.segment = segment;
     this.offset = offset;
   }
 
   public boolean isPresent() {
-    if (offset + LENGTH_SIZE > segment.byteSize()) {
+    if (offset + MAGIC_SIZE > segment.byteSize()) {
       return false;
     }
-    int len = rawLength();
-    if (len == 0) {
-      return false;
-    }
-    if (len < 0 || offset + len + OVERHEAD > segment.byteSize()) {
-      throw new JournalCorruptionException("Invalid frame at offset " + offset);
-    }
-    return true;
+    return segment.get(ValueLayout.JAVA_INT_UNALIGNED, offset) == FRAME_MAGIC;
   }
 
   public boolean isValid() {
@@ -46,8 +43,12 @@ public final class SegmentFrame {
       return false;
     }
     int len = rawLength();
-    int stored = segment.get(ValueLayout.JAVA_INT_UNALIGNED, offset + LENGTH_SIZE + len);
-    int computed = checksum(segment, offset + LENGTH_SIZE, len);
+    if (len < 0 || offset + OVERHEAD + len > segment.byteSize()) {
+      throw new JournalCorruptionException(
+          "Invalid frame length at offset " + offset + ": " + len);
+    }
+    int stored = segment.get(ValueLayout.JAVA_INT_UNALIGNED, offset + MAGIC_SIZE + LENGTH_SIZE + len);
+    int computed = checksum(segment, offset, MAGIC_SIZE + LENGTH_SIZE + len);
     return stored == computed;
   }
 
@@ -64,24 +65,32 @@ public final class SegmentFrame {
     }
     int len = rawLength();
     byte[] data = new byte[len];
-    MemorySegment.copy(segment, ValueLayout.JAVA_BYTE, offset + LENGTH_SIZE, data, 0, len);
+    MemorySegment.copy(segment, ValueLayout.JAVA_BYTE, offset + MAGIC_SIZE + LENGTH_SIZE, data, 0, len);
     return data;
   }
 
-  public long write(byte[] payload) {
+  static long write(MemorySegment segment, long offset, byte[] payload) {
+    if (payload == null) {
+      throw new IllegalArgumentException("Record payload must not be null");
+    }
+
     int len = payload.length;
     MemorySegment source = MemorySegment.ofArray(payload);
-    int crc = checksum(source, 0, len);
 
-    segment.set(ValueLayout.JAVA_INT_UNALIGNED, offset, len);
-    MemorySegment.copy(source, 0, segment, offset + LENGTH_SIZE, len);
-    segment.set(ValueLayout.JAVA_INT_UNALIGNED, offset + LENGTH_SIZE + len, crc);
+    segment.set(ValueLayout.JAVA_INT_UNALIGNED, offset, FRAME_MAGIC);
+    segment.set(ValueLayout.JAVA_INT_UNALIGNED, offset + MAGIC_SIZE, len);
+    MemorySegment.copy(source, 0, segment, offset + MAGIC_SIZE + LENGTH_SIZE, len);
+    int crc = checksum(segment, offset, MAGIC_SIZE + LENGTH_SIZE + len);
+    segment.set(ValueLayout.JAVA_INT_UNALIGNED, offset + MAGIC_SIZE + LENGTH_SIZE + len, crc);
 
     return (long) len + OVERHEAD;
   }
 
   private int rawLength() {
-    return segment.get(ValueLayout.JAVA_INT_UNALIGNED, offset);
+    if (cachedLength == -1) {
+      cachedLength = segment.get(ValueLayout.JAVA_INT_UNALIGNED, offset + MAGIC_SIZE);
+    }
+    return cachedLength;
   }
 
   private static int checksum(MemorySegment source, long off, int len) {
